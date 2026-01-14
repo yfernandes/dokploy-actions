@@ -1,0 +1,134 @@
+name: 'Dokploy Deploy'
+description: 'Deploy to Dokploy and poll for completion'
+
+inputs:
+  dokploy_url:
+    description: 'Dokploy instance URL (e.g., https://dokploy.example.com)'
+    required: true
+  api_key:
+    description: 'Dokploy API key'
+    required: true
+  app_id:
+    description: 'Dokploy application ID'
+    required: true
+  docker_image:
+    description: 'Docker image to deploy'
+    required: true
+  deployment_title:
+    description: 'Deployment title'
+    required: false
+    default: 'Automated Deployment'
+  deployment_description:
+    description: 'Deployment description'
+    required: false
+    default: ''
+  max_wait_minutes:
+    description: 'Maximum wait time for deployment in minutes'
+    required: false
+    default: '25'
+
+outputs:
+  deployment_status:
+    description: 'Final deployment status'
+    value: ${{ steps.wait.outputs.status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Update Docker Provider
+      id: update
+      shell: bash
+      run: |
+        echo "Updating Docker provider for application ${{ inputs.app_id }}..."
+        RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/application.saveDockerProvider" \
+          -H "x-api-key: ${{ inputs.api_key }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "applicationId": "${{ inputs.app_id }}",
+            "dockerImage": "${{ inputs.docker_image }}"
+          }' \
+          -w "\n%{http_code}")
+        
+        HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "❌ Docker provider update failed with status $HTTP_CODE"
+          echo "Response: $BODY"
+          exit 1
+        fi
+        
+        echo "✅ Docker provider updated successfully"
+
+    - name: Trigger Deployment
+      id: trigger
+      shell: bash
+      run: |
+        echo "Triggering deployment for application ${{ inputs.app_id }}..."
+        RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/application.redeploy" \
+          -H "x-api-key: ${{ inputs.api_key }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "applicationId": "${{ inputs.app_id }}",
+            "title": "${{ inputs.deployment_title }}",
+            "description": "${{ inputs.deployment_description }}"
+          }' \
+          -w "\n%{http_code}")
+        
+        HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "❌ Deployment trigger failed with status $HTTP_CODE"
+          echo "Response: $BODY"
+          exit 1
+        fi
+        
+        echo "✅ Deployment triggered successfully"
+        echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY"
+
+    - name: Wait for Deployment
+      id: wait
+      shell: bash
+      run: |
+        set +e
+        MAX_MINUTES=${{ inputs.max_wait_minutes }}
+        MAX_ATTEMPTS=$((MAX_MINUTES * 6))  # 10-second intervals
+        ATTEMPT=0
+        
+        echo "Polling deployment status (max wait: ${MAX_MINUTES} minutes)..."
+        
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+          DEPLOYMENTS=$(curl -s "${{ inputs.dokploy_url }}/api/deployment.all?applicationId=${{ inputs.app_id }}" \
+            -H "x-api-key: ${{ inputs.api_key }}")
+          
+          # Get the most recent deployment
+          LATEST_DEPLOYMENT=$(echo "$DEPLOYMENTS" | jq -r 'sort_by(.createdAt) | .[-1]')
+          STATUS=$(echo "$LATEST_DEPLOYMENT" | jq -r '.deploymentStatus // .status // "unknown"')
+          
+          echo "[$((ATTEMPT + 1))/$MAX_ATTEMPTS] Deployment status: $STATUS"
+          
+          if [ "$STATUS" = "success" ] || [ "$STATUS" = "done" ]; then
+            echo "✅ Deployment completed successfully!"
+            echo "status=success" >> $GITHUB_OUTPUT
+            exit 0
+          elif [ "$STATUS" = "failed" ] || [ "$STATUS" = "error" ]; then
+            echo "❌ Deployment failed with status: $STATUS"
+            echo "$LATEST_DEPLOYMENT" | jq '.'
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          elif [ "$STATUS" = "in_progress" ] || [ "$STATUS" = "running" ] || [ "$STATUS" = "pending" ]; then
+            sleep 10
+            ATTEMPT=$((ATTEMPT + 1))
+            continue
+          else
+            echo "⚠️  Unknown status: $STATUS"
+            sleep 10
+            ATTEMPT=$((ATTEMPT + 1))
+            continue
+          fi
+        done
+        
+        echo "❌ Deployment timeout - max wait time (${MAX_MINUTES} min) reached"
+        echo "status=timeout" >> $GITHUB_OUTPUT
+        exit 1

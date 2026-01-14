@@ -1,0 +1,49 @@
+name: Dokploy Deployment
+
+on:
+  push:
+    branches:
+      - main
+      - releases
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-admin:
+    name: Deploy Admin to Dokploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    if: github.ref_name == 'main' || github.ref_name == 'releases'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Admin
+        uses: ./.github/actions/dokploy-deploy
+        with:
+          dokploy_url: ${{ secrets.DOKPLOY_BASE_URL }}
+          api_key: ${{ secrets.DOKPLOY_API_KEY }}
+          app_id: ${{ secrets.DOKPLOY_ADMIN_APP_ID }}
+          docker_image: ghcr.io/greenbudz/medusa-admin:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+          deployment_title: Deployment from ${{ github.ref_name }} (${{ github.sha }})
+          deployment_description: Triggered by commit - ${{ github.event.head_commit.message }}
+          max_wait_minutes: 30
+
+  deploy-storefront:
+    name: Deploy Storefront to Dokploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    if: (github.ref_name == 'main' || github.ref_name == 'releases') && secrets.DOKPLOY_STOREFRONT_APP_ID != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Storefront
+        uses: ./.github/actions/dokploy-deploy
+        with:
+          dokploy_url: ${{ secrets.DOKPLOY_BASE_URL }}
+          api_key: ${{ secrets.DOKPLOY_API_KEY }}
+          app_id: ${{ secrets.DOKPLOY_STOREFRONT_APP_ID }}
+          docker_image: ghcr.io/greenbudz/medusa-storefront:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+          deployment_title: Deployment from ${{ github.ref_name }} (${{ github.sha }})
+          deployment_description: Triggered by commit - ${{ github.event.head_commit.message }}
+          max_wait_minutes: 30
