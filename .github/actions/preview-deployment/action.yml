@@ -1,0 +1,206 @@
+name: 'Preview Deployment'
+description: 'Create or update preview deployments in Dokploy for pull requests'
+author: 'Dokploy Actions'
+
+branding:
+  icon: 'eye'
+  color: 'green'
+
+inputs:
+  dokploy_url:
+    description: 'Dokploy instance URL'
+    required: true
+  api_key:
+    description: 'Dokploy API key'
+    required: true
+  app_id:
+    description: 'Dokploy application ID to use as template'
+    required: true
+  docker_image:
+    description: 'Docker image for preview deployment'
+    required: true
+  pr_number:
+    description: 'Pull request number'
+    required: true
+  pr_title:
+    description: 'Pull request title'
+    required: true
+  github_repo:
+    description: 'GitHub repository (owner/repo)'
+    required: false
+    default: ''
+  deployment_name:
+    description: 'Name prefix for preview deployment'
+    required: false
+    default: 'preview'
+  max_wait_minutes:
+    description: 'Maximum wait time for deployment in minutes'
+    required: false
+    default: '25'
+  cleanup_on_failure:
+    description: 'Delete preview if deployment fails'
+    required: false
+    default: 'false'
+
+outputs:
+  deployment_status:
+    description: 'Final deployment status (success, failed, timeout)'
+    value: ${{ steps.deploy.outputs.status }}
+  preview_url:
+    description: 'URL to access the preview deployment'
+    value: ${{ steps.deploy.outputs.preview_url }}
+  deployment_id:
+    description: 'Dokploy deployment ID'
+    value: ${{ steps.deploy.outputs.deployment_id }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: deploy
+      shell: bash
+      run: |
+        set +e
+        
+        PR_NUMBER="${{ inputs.pr_number }}"
+        PR_TITLE="${{ inputs.pr_title }}"
+        DEPLOYMENT_NAME="${{ inputs.deployment_name }}-pr-$PR_NUMBER"
+        GITHUB_REPO="${{ inputs.github_repo }}"
+        MAX_MINUTES="${{ inputs.max_wait_minutes }}"
+        CLEANUP_ON_FAILURE="${{ inputs.cleanup_on_failure }}"
+        
+        echo "🚀 Creating preview deployment for PR #$PR_NUMBER: $PR_TITLE"
+        
+        # Step 1: Get the source application details
+        echo "Fetching application details..."
+        APP_RESPONSE=$(curl -s "${{ inputs.dokploy_url }}/api/application.one?applicationId=${{ inputs.app_id }}" \
+          -H "x-api-key: ${{ inputs.api_key }}")
+        
+        if ! echo "$APP_RESPONSE" | jq -e '.id' > /dev/null 2>&1; then
+          echo "❌ Failed to fetch application details"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        # Step 2: Create preview application (if needed)
+        echo "Checking if preview app exists..."
+        PREVIEW_APP=$(curl -s "${{ inputs.dokploy_url }}/api/application.all" \
+          -H "x-api-key: ${{ inputs.api_key }}" | jq -r ".[] | select(.name == \"$DEPLOYMENT_NAME\") | .id" 2>/dev/null)
+        
+        if [ -z "$PREVIEW_APP" ]; then
+          echo "Creating new preview application: $DEPLOYMENT_NAME"
+          
+          PROJECT_ID=$(echo "$APP_RESPONSE" | jq -r '.projectId')
+          
+          CREATE_RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/application.create" \
+            -H "x-api-key: ${{ inputs.api_key }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "'$DEPLOYMENT_NAME'",
+              "projectId": "'$PROJECT_ID'",
+              "appType": "docker"
+            }' \
+            -w "\n%{http_code}")
+          
+          HTTP_CODE=$(echo "$CREATE_RESPONSE" | tail -n 1)
+          BODY=$(echo "$CREATE_RESPONSE" | sed '$d')
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ Failed to create preview app: $BODY"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          PREVIEW_APP=$(echo "$BODY" | jq -r '.id')
+          echo "✅ Preview app created: $PREVIEW_APP"
+        else
+          echo "✅ Preview app exists: $PREVIEW_APP"
+        fi
+        
+        # Step 3: Update Docker provider
+        echo "Updating Docker image..."
+        UPDATE_RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/application.saveDockerProvider" \
+          -H "x-api-key: ${{ inputs.api_key }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "applicationId": "'$PREVIEW_APP'",
+            "dockerImage": "${{ inputs.docker_image }}"
+          }' \
+          -w "\n%{http_code}")
+        
+        HTTP_CODE=$(echo "$UPDATE_RESPONSE" | tail -n 1)
+        
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "❌ Failed to update Docker provider"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          if [ "$CLEANUP_ON_FAILURE" = "true" ]; then
+            echo "Cleaning up preview app..."
+            curl -X DELETE "${{ inputs.dokploy_url }}/api/application.remove?applicationId=$PREVIEW_APP" \
+              -H "x-api-key: ${{ inputs.api_key }}" 2>/dev/null
+          fi
+          exit 1
+        fi
+        
+        # Step 4: Trigger deployment
+        echo "Triggering preview deployment..."
+        TRIGGER_RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/application.redeploy" \
+          -H "x-api-key: ${{ inputs.api_key }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "applicationId": "'$PREVIEW_APP'",
+            "title": "Preview for PR #'$PR_NUMBER'",
+            "description": "'"$PR_TITLE"' - '"$GITHUB_REPO"'"
+          }' \
+          -w "\n%{http_code}")
+        
+        HTTP_CODE=$(echo "$TRIGGER_RESPONSE" | tail -n 1)
+        BODY=$(echo "$TRIGGER_RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "❌ Deployment trigger failed"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          if [ "$CLEANUP_ON_FAILURE" = "true" ]; then
+            curl -X DELETE "${{ inputs.dokploy_url }}/api/application.remove?applicationId=$PREVIEW_APP" \
+              -H "x-api-key: ${{ inputs.api_key }}" 2>/dev/null
+          fi
+          exit 1
+        fi
+        
+        # Step 5: Wait for deployment
+        echo "Waiting for preview deployment to complete..."
+        MAX_ATTEMPTS=$((MAX_MINUTES * 6))
+        ATTEMPT=0
+        
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+          DEPLOYMENTS=$(curl -s "${{ inputs.dokploy_url }}/api/deployment.all?applicationId=$PREVIEW_APP" \
+            -H "x-api-key: ${{ inputs.api_key }}")
+          
+          LATEST=$(echo "$DEPLOYMENTS" | jq -r 'sort_by(.createdAt) | .[-1]')
+          DEPLOYMENT_ID=$(echo "$LATEST" | jq -r '.id')
+          STATUS=$(echo "$LATEST" | jq -r '.deploymentStatus // .status // "unknown"')
+          
+          echo "[$((ATTEMPT + 1))/$MAX_ATTEMPTS] Status: $STATUS"
+          
+          if [ "$STATUS" = "success" ] || [ "$STATUS" = "done" ]; then
+            echo "✅ Preview deployment completed successfully!"
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+            echo "preview_url=${{ inputs.dokploy_url }}/applications/$PREVIEW_APP" >> $GITHUB_OUTPUT
+            exit 0
+          elif [ "$STATUS" = "failed" ] || [ "$STATUS" = "error" ]; then
+            echo "❌ Preview deployment failed"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            if [ "$CLEANUP_ON_FAILURE" = "true" ]; then
+              echo "Cleaning up preview app..."
+              curl -X DELETE "${{ inputs.dokploy_url }}/api/application.remove?applicationId=$PREVIEW_APP" \
+                -H "x-api-key: ${{ inputs.api_key }}" 2>/dev/null
+            fi
+            exit 1
+          fi
+          
+          sleep 10
+          ATTEMPT=$((ATTEMPT + 1))
+        done
+        
+        echo "❌ Preview deployment timeout"
+        echo "status=timeout" >> $GITHUB_OUTPUT
+        exit 1

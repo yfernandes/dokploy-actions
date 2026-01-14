@@ -1,0 +1,109 @@
+name: 'Update Dokploy Provider'
+description: 'Update application provider configuration in Dokploy (Docker, Git, Compose, etc.)'
+author: 'Dokploy Actions'
+
+branding:
+  icon: 'refresh-cw'
+  color: 'blue'
+
+inputs:
+  dokploy_url:
+    description: 'Dokploy instance URL (e.g., https://dokploy.example.com)'
+    required: true
+  api_key:
+    description: 'Dokploy API key'
+    required: true
+  app_id:
+    description: 'Dokploy application ID'
+    required: true
+  provider_type:
+    description: 'Provider type (docker, git, compose, raw)'
+    required: true
+  provider_data:
+    description: 'Provider configuration as JSON (e.g., {"dockerImage": "myimage:latest"} for docker)'
+    required: true
+
+outputs:
+  success:
+    description: 'Whether the update was successful (true/false)'
+    value: ${{ steps.update.outputs.success }}
+  response:
+    description: 'API response from Dokploy'
+    value: ${{ steps.update.outputs.response }}
+  error_message:
+    description: 'Error message if update failed'
+    value: ${{ steps.update.outputs.error }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: update
+      shell: bash
+      run: |
+        set +e
+        
+        PROVIDER_TYPE="${{ inputs.provider_type }}"
+        PROVIDER_DATA='${{ inputs.provider_data }}'
+        
+        echo "Updating $PROVIDER_TYPE provider for application ${{ inputs.app_id }}..."
+        
+        # Validate JSON input
+        if ! echo "$PROVIDER_DATA" | jq empty 2>/dev/null; then
+          echo "❌ Invalid JSON in provider_data"
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "error=Invalid JSON in provider_data" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        # Build request payload
+        PAYLOAD=$(jq -n \
+          --arg appId "${{ inputs.app_id }}" \
+          --argjson providerData "$PROVIDER_DATA" \
+          '{
+            applicationId: $appId
+          } + $providerData')
+        
+        # Send request to appropriate endpoint based on provider type
+        case "$PROVIDER_TYPE" in
+          docker)
+            ENDPOINT="application.saveDockerProvider"
+            ;;
+          git)
+            ENDPOINT="application.saveGitProvider"
+            ;;
+          compose)
+            ENDPOINT="application.saveComposeProvider"
+            ;;
+          raw)
+            ENDPOINT="application.saveRawProvider"
+            ;;
+          *)
+            echo "❌ Unknown provider type: $PROVIDER_TYPE"
+            echo "success=false" >> $GITHUB_OUTPUT
+            echo "error=Unknown provider type: $PROVIDER_TYPE" >> $GITHUB_OUTPUT
+            exit 1
+            ;;
+        esac
+        
+        RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/$ENDPOINT" \
+          -H "x-api-key: ${{ inputs.api_key }}" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD" \
+          -w "\n%{http_code}" \
+          2>/dev/null)
+        
+        HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+        
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "❌ Provider update failed with status $HTTP_CODE"
+          echo "Response: $BODY"
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "error=HTTP $HTTP_CODE: $BODY" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        echo "✅ Provider updated successfully"
+        echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY"
+        echo "success=true" >> $GITHUB_OUTPUT
+        echo "response=$BODY" >> $GITHUB_OUTPUT

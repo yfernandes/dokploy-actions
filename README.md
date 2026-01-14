@@ -4,7 +4,7 @@ A collection of GitHub Actions for automating deployments and operations with [D
 
 ## 📦 Available Actions
 
-### [Dokploy Deploy](./actions/dokploy-deploy)
+### 1. [Dokploy Deploy](./actions/dokploy-deploy)
 
 Deploy applications to Dokploy and poll for completion.
 
@@ -25,7 +25,89 @@ Deploy applications to Dokploy and poll for completion.
     docker_image: ghcr.io/user/app:latest
 ```
 
-[→ Full Documentation](./actions/dokploy-deploy/README.md)
+[→ Full Documentation](./.github/actions/dokploy-deploy/README.md)
+
+---
+
+### 2. [Update Provider](./actions/update-provider)
+
+Update application provider configuration in Dokploy (Docker, Git, Compose, etc.).
+
+**Features:**
+- ✅ Generic provider type support (docker, git, compose, raw)
+- ✅ JSON-based configuration
+- ✅ Validation of provider data
+- ✅ Support for multiple provider types from one action
+- ✅ Detailed error messages
+
+**Usage:**
+```yaml
+- uses: yago/dokploy-actions/update-provider@v1
+  with:
+    dokploy_url: ${{ secrets.DOKPLOY_BASE_URL }}
+    api_key: ${{ secrets.DOKPLOY_API_KEY }}
+    app_id: ${{ secrets.DOKPLOY_APP_ID }}
+    provider_type: 'docker'
+    provider_data: '{"dockerImage": "ghcr.io/user/app:latest"}'
+```
+
+[→ Full Documentation](./.github/actions/update-provider/README.md)
+
+---
+
+### 3. [Preview Deployment](./actions/preview-deployment)
+
+Create or update preview deployments in Dokploy for pull requests.
+
+**Features:**
+- ✅ Automatically create preview applications per PR
+- ✅ Update Docker image for preview
+- ✅ Poll deployment status
+- ✅ Optional cleanup on failure
+- ✅ Links to preview environment
+- ✅ Perfect for testing before merge
+
+**Usage:**
+```yaml
+- uses: yago/dokploy-actions/preview-deployment@v1
+  with:
+    dokploy_url: ${{ secrets.DOKPLOY_BASE_URL }}
+    api_key: ${{ secrets.DOKPLOY_API_KEY }}
+    app_id: ${{ secrets.DOKPLOY_APP_ID }}
+    docker_image: ghcr.io/user/app:pr-${{ github.event.pull_request.number }}
+    pr_number: ${{ github.event.pull_request.number }}
+    pr_title: ${{ github.event.pull_request.title }}
+```
+
+[→ Full Documentation](./.github/actions/preview-deployment/README.md)
+
+---
+
+### 4. [Migrate Database](./actions/migrate-database)
+
+Run database migrations in Dokploy applications via command execution.
+
+**Features:**
+- ✅ Support for any migration framework
+- ✅ Configurable timeout
+- ✅ Automatic rollback on failure (optional)
+- ✅ Execution time tracking
+- ✅ Detailed command output
+- ✅ Works with npm, python, go, php, and more
+
+**Usage:**
+```yaml
+- uses: yago/dokploy-actions/migrate-database@v1
+  with:
+    dokploy_url: ${{ secrets.DOKPLOY_BASE_URL }}
+    api_key: ${{ secrets.DOKPLOY_API_KEY }}
+    app_id: ${{ secrets.DOKPLOY_APP_ID }}
+    migration_command: 'npm run migrate'
+    rollback_on_failure: 'true'
+    rollback_command: 'npm run migrate:rollback'
+```
+
+[→ Full Documentation](./.github/actions/migrate-database/README.md)
 
 ---
 

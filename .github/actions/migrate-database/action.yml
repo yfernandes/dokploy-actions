@@ -1,0 +1,188 @@
+name: 'Migrate Database'
+description: 'Run database migrations in a Dokploy application via command execution'
+author: 'Dokploy Actions'
+
+branding:
+  icon: 'database'
+  color: 'orange'
+
+inputs:
+  dokploy_url:
+    description: 'Dokploy instance URL'
+    required: true
+  api_key:
+    description: 'Dokploy API key'
+    required: true
+  app_id:
+    description: 'Dokploy application ID'
+    required: true
+  migration_command:
+    description: 'Migration command to execute (e.g., npm run migrate, python manage.py migrate)'
+    required: true
+  timeout_seconds:
+    description: 'Timeout for migration execution in seconds'
+    required: false
+    default: '300'
+  skip_on_failure:
+    description: 'Continue workflow even if migration fails'
+    required: false
+    default: 'false'
+  rollback_on_failure:
+    description: 'Attempt to rollback migration on failure'
+    required: false
+    default: 'false'
+  rollback_command:
+    description: 'Rollback command to execute (e.g., npm run migrate:rollback)'
+    required: false
+    default: ''
+
+outputs:
+  migration_status:
+    description: 'Migration status (success, failed, timeout)'
+    value: ${{ steps.migrate.outputs.status }}
+  migration_output:
+    description: 'Full output from migration command'
+    value: ${{ steps.migrate.outputs.output }}
+  execution_time:
+    description: 'Time taken for migration in seconds'
+    value: ${{ steps.migrate.outputs.execution_time }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: migrate
+      shell: bash
+      run: |
+        set +e
+        
+        MIGRATION_CMD="${{ inputs.migration_command }}"
+        TIMEOUT_SEC="${{ inputs.timeout_seconds }}"
+        SKIP_ON_FAILURE="${{ inputs.skip_on_failure }}"
+        ROLLBACK_ON_FAILURE="${{ inputs.rollback_on_failure }}"
+        ROLLBACK_CMD="${{ inputs.rollback_command }}"
+        
+        START_TIME=$(date +%s)
+        
+        echo "🗄️ Starting database migration..."
+        echo "Command: $MIGRATION_CMD"
+        echo "Timeout: ${TIMEOUT_SEC}s"
+        echo ""
+        
+        # Execute migration command via Dokploy
+        # Note: This uses the exec endpoint which varies by Dokploy version
+        # Adjust endpoint as needed for your Dokploy instance
+        
+        EXEC_RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/application.exec" \
+          -H "x-api-key: ${{ inputs.api_key }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "applicationId": "${{ inputs.app_id }}",
+            "command": "'$MIGRATION_CMD'"
+          }' \
+          -w "\n%{http_code}" \
+          --max-time $TIMEOUT_SEC \
+          2>/dev/null)
+        
+        HTTP_CODE=$(echo "$EXEC_RESPONSE" | tail -n 1)
+        BODY=$(echo "$EXEC_RESPONSE" | sed '$d')
+        
+        END_TIME=$(date +%s)
+        EXECUTION_TIME=$((END_TIME - START_TIME))
+        
+        # Check for timeout
+        if [ $EXECUTION_TIME -ge $TIMEOUT_SEC ]; then
+          echo "❌ Migration timeout after ${TIMEOUT_SEC}s"
+          echo "status=timeout" >> $GITHUB_OUTPUT
+          echo "execution_time=$EXECUTION_TIME" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        # Parse response
+        if [ "$HTTP_CODE" = "200" ]; then
+          # Check if migration was successful in the response
+          if echo "$BODY" | jq -e '.success' > /dev/null 2>&1; then
+            SUCCESS=$(echo "$BODY" | jq -r '.success')
+            OUTPUT=$(echo "$BODY" | jq -r '.output // .message // ""')
+            
+            if [ "$SUCCESS" = "true" ] || [ "$SUCCESS" = "1" ]; then
+              echo "✅ Database migration completed successfully!"
+              echo ""
+              echo "Output:"
+              echo "$OUTPUT"
+              echo ""
+              echo "status=success" >> $GITHUB_OUTPUT
+              echo "migration_output=$OUTPUT" >> $GITHUB_OUTPUT
+              echo "execution_time=$EXECUTION_TIME" >> $GITHUB_OUTPUT
+              exit 0
+            else
+              echo "❌ Migration failed"
+              echo ""
+              echo "Output:"
+              echo "$OUTPUT"
+              echo ""
+              
+              # Attempt rollback if configured
+              if [ "$ROLLBACK_ON_FAILURE" = "true" ] && [ -n "$ROLLBACK_CMD" ]; then
+                echo ""
+                echo "🔄 Attempting rollback..."
+                
+                ROLLBACK_RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/application.exec" \
+                  -H "x-api-key: ${{ inputs.api_key }}" \
+                  -H "Content-Type: application/json" \
+                  -d '{
+                    "applicationId": "${{ inputs.app_id }}",
+                    "command": "'$ROLLBACK_CMD'"
+                  }' \
+                  -w "\n%{http_code}" \
+                  2>/dev/null)
+                
+                ROLLBACK_HTTP=$(echo "$ROLLBACK_RESPONSE" | tail -n 1)
+                ROLLBACK_BODY=$(echo "$ROLLBACK_RESPONSE" | sed '$d')
+                
+                if [ "$ROLLBACK_HTTP" = "200" ]; then
+                  echo "✅ Rollback completed"
+                  echo "$ROLLBACK_BODY"
+                else
+                  echo "⚠️ Rollback may have failed"
+                  echo "$ROLLBACK_BODY"
+                fi
+              fi
+              
+              echo "status=failed" >> $GITHUB_OUTPUT
+              echo "migration_output=$OUTPUT" >> $GITHUB_OUTPUT
+              echo "execution_time=$EXECUTION_TIME" >> $GITHUB_OUTPUT
+              
+              if [ "$SKIP_ON_FAILURE" = "true" ]; then
+                exit 0
+              else
+                exit 1
+              fi
+            fi
+          else
+            # Response doesn't have success field, treat as success if 200
+            OUTPUT=$(echo "$BODY" | jq -r '.' 2>/dev/null || echo "$BODY")
+            echo "✅ Migration command executed"
+            echo ""
+            echo "Output:"
+            echo "$OUTPUT"
+            echo ""
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "migration_output=$OUTPUT" >> $GITHUB_OUTPUT
+            echo "execution_time=$EXECUTION_TIME" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+        else
+          echo "❌ Migration failed with HTTP $HTTP_CODE"
+          echo ""
+          echo "Response:"
+          echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY"
+          echo ""
+          echo "status=failed" >> $GITHUB_OUTPUT
+          echo "execution_time=$EXECUTION_TIME" >> $GITHUB_OUTPUT
+          
+          if [ "$SKIP_ON_FAILURE" = "true" ]; then
+            exit 0
+          else
+            exit 1
+          fi
+        fi
