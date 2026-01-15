@@ -29,15 +29,15 @@ Deploy applications to Dokploy and poll for completion.
 
 ---
 
-### 2. [Update Provider](./actions/update-provider)
+### 2. [Update Docker Provider](./actions/update-provider)
 
-Update application provider configuration in Dokploy (Docker, Git, Compose, etc.).
+Update Docker image configuration in Dokploy applications.
 
 **Features:**
-- ✅ Generic provider type support (docker, git, compose, raw)
-- ✅ JSON-based configuration
-- ✅ Validation of provider data
-- ✅ Support for multiple provider types from one action
+- ✅ Update Docker image reference
+- ✅ Configure private Docker registries
+- ✅ Set registry credentials
+- ✅ Support for any Docker registry
 - ✅ Detailed error messages
 
 **Usage:**
@@ -47,8 +47,7 @@ Update application provider configuration in Dokploy (Docker, Git, Compose, etc.
     dokploy_url: ${{ secrets.DOKPLOY_BASE_URL }}
     api_key: ${{ secrets.DOKPLOY_API_KEY }}
     app_id: ${{ secrets.DOKPLOY_APP_ID }}
-    provider_type: 'docker'
-    provider_data: '{"dockerImage": "ghcr.io/user/app:latest"}'
+    docker_image: 'ghcr.io/user/app:latest'
 ```
 
 [→ Full Documentation](./.github/actions/update-provider/README.md)

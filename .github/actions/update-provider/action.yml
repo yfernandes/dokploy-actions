@@ -16,20 +16,26 @@ inputs:
   app_id:
     description: 'Dokploy application ID'
     required: true
-  provider_type:
-    description: 'Provider type (docker, git, compose, raw)'
+  docker_image:
+    description: 'Docker image to deploy (e.g., myimage:latest or registry.com/myimage:latest)'
     required: true
-  provider_data:
-    description: 'Provider configuration as JSON (e.g., {"dockerImage": "myimage:latest"} for docker)'
-    required: true
+  registry_url:
+    description: 'Docker registry URL (optional, for private registries)'
+    required: false
+    default: ''
+  username:
+    description: 'Docker registry username (optional, for private registries)'
+    required: false
+    default: ''
+  password:
+    description: 'Docker registry password (optional, for private registries)'
+    required: false
+    default: ''
 
 outputs:
   success:
     description: 'Whether the update was successful (true/false)'
     value: ${{ steps.update.outputs.success }}
-  response:
-    description: 'API response from Dokploy'
-    value: ${{ steps.update.outputs.response }}
   error_message:
     description: 'Error message if update failed'
     value: ${{ steps.update.outputs.error }}
@@ -42,50 +48,34 @@ runs:
       run: |
         set +e
         
-        PROVIDER_TYPE="${{ inputs.provider_type }}"
-        PROVIDER_DATA='${{ inputs.provider_data }}'
+        DOCKER_IMAGE="${{ inputs.docker_image }}"
+        REGISTRY_URL="${{ inputs.registry_url }}"
+        USERNAME="${{ inputs.username }}"
+        PASSWORD="${{ inputs.password }}"
         
-        echo "Updating $PROVIDER_TYPE provider for application ${{ inputs.app_id }}..."
-        
-        # Validate JSON input
-        if ! echo "$PROVIDER_DATA" | jq empty 2>/dev/null; then
-          echo "❌ Invalid JSON in provider_data"
-          echo "success=false" >> $GITHUB_OUTPUT
-          echo "error=Invalid JSON in provider_data" >> $GITHUB_OUTPUT
-          exit 1
-        fi
+        echo "Updating Docker provider for application ${{ inputs.app_id }}..."
         
         # Build request payload
-        PAYLOAD=$(jq -n \
-          --arg appId "${{ inputs.app_id }}" \
-          --argjson providerData "$PROVIDER_DATA" \
-          '{
-            applicationId: $appId
-          } + $providerData')
+        PAYLOAD='{
+          "applicationId": "${{ inputs.app_id }}",
+          "dockerImage": "'$DOCKER_IMAGE'"'
         
-        # Send request to appropriate endpoint based on provider type
-        case "$PROVIDER_TYPE" in
-          docker)
-            ENDPOINT="application.saveDockerProvider"
-            ;;
-          git)
-            ENDPOINT="application.saveGitProvider"
-            ;;
-          compose)
-            ENDPOINT="application.saveComposeProvider"
-            ;;
-          raw)
-            ENDPOINT="application.saveRawProvider"
-            ;;
-          *)
-            echo "❌ Unknown provider type: $PROVIDER_TYPE"
-            echo "success=false" >> $GITHUB_OUTPUT
-            echo "error=Unknown provider type: $PROVIDER_TYPE" >> $GITHUB_OUTPUT
-            exit 1
-            ;;
-        esac
+        # Add optional fields if provided
+        if [ -n "$REGISTRY_URL" ]; then
+          PAYLOAD="${PAYLOAD},\"registryUrl\": \"$REGISTRY_URL\""
+        fi
+        if [ -n "$USERNAME" ]; then
+          PAYLOAD="${PAYLOAD},\"username\": \"$USERNAME\""
+        fi
+        if [ -n "$PASSWORD" ]; then
+          PAYLOAD="${PAYLOAD},\"password\": \"$PASSWORD\""
+        fi
         
-        RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/$ENDPOINT" \
+        PAYLOAD="${PAYLOAD}}"
+        
+        echo "Sending request to Dokploy API..."
+        
+        RESPONSE=$(curl -X POST "${{ inputs.dokploy_url }}/api/application.saveDockerProvider" \
           -H "x-api-key: ${{ inputs.api_key }}" \
           -H "Content-Type: application/json" \
           -d "$PAYLOAD" \
@@ -96,14 +86,13 @@ runs:
         BODY=$(echo "$RESPONSE" | sed '$d')
         
         if [ "$HTTP_CODE" != "200" ]; then
-          echo "❌ Provider update failed with status $HTTP_CODE"
+          echo "❌ Docker provider update failed with status $HTTP_CODE"
           echo "Response: $BODY"
           echo "success=false" >> $GITHUB_OUTPUT
           echo "error=HTTP $HTTP_CODE: $BODY" >> $GITHUB_OUTPUT
           exit 1
         fi
         
-        echo "✅ Provider updated successfully"
+        echo "✅ Docker provider updated successfully"
         echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY"
         echo "success=true" >> $GITHUB_OUTPUT
-        echo "response=$BODY" >> $GITHUB_OUTPUT
